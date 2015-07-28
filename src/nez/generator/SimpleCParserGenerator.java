@@ -34,10 +34,10 @@ import nez.lang.Tagging;
 public class SimpleCParserGenerator extends ParserGenerator {
 	private int fid = 0;
 	private int failureOpStackPoint = 0;
-	private final ArrayList<String> failureOpStack = new ArrayList<String>();
+	private final ArrayList<Runnable> failureOpStack = new ArrayList<Runnable>();
 
 	{
-		this.failureOpStack.add("return 1;");
+		this.failureOpStack.add(() -> this.file.writeIndent("return 1;"));
 	}
 
 	@Override
@@ -48,7 +48,6 @@ public class SimpleCParserGenerator extends ParserGenerator {
 	@Override
 	public void generate(Grammar grammar, NezOption option, String fileName) {
 		this.setOption(option);
-		option.setOption("ast", false);
 		this.setOutputFile(fileName);
 		makeHeader(grammar);
 		for(Production p : grammar.getProductionList()) {
@@ -103,7 +102,13 @@ public class SimpleCParserGenerator extends ParserGenerator {
 		this.endAndStartBlock("} else if((ctx->cur - ctx->inputs) != ctx->input_size) {");
 		this.file.writeIndent("nez_PrintErrorInfo(\"unconsume\");");
 		this.endAndStartBlock("} else {");
-		this.file.writeIndent("fprintf(stderr, \"consumed\\n\");");
+		if(this.option.enabledASTConstruction) {
+			this.file.writeIndent("ParsingObject po = nez_commitLog(ctx,0);");
+			this.file.writeIndent("dump_pego(&po, ctx->inputs, 0);");
+		}
+		else {
+			this.file.writeIndent("fprintf(stderr, \"consumed\\n\");");
+		}
 		this.endBlock("}");
 
 		this.file.writeIndent("return 0;");
@@ -111,20 +116,21 @@ public class SimpleCParserGenerator extends ParserGenerator {
 
 	}
 
-	private void pushOpFailure(String op) {
+	private void pushOpFailure(Runnable op) {
 		this.failureOpStack.add(op);
 		++this.failureOpStackPoint;
 	}
 
-	private String popOpFailure() {
+	private Runnable popOpFailure() {
 		return this.failureOpStack.remove(this.failureOpStackPoint--);
 	}
 
 	private void failure() {
-		String op = this.failureOpStack.get(this.failureOpStackPoint);
+		Runnable op = this.popOpFailure();
 		if(op != null) {
-			this.file.writeIndent(op);
+			op.run();
 		}
+		this.pushOpFailure(op);
 	}
 
 	private void startBlock(String text) {
@@ -143,7 +149,7 @@ public class SimpleCParserGenerator extends ParserGenerator {
 		this.file.incIndent();
 	}
 
-	private void startLoop(String text, String failureOp) {
+	private void startLoop(String text, Runnable failureOp) {
 		this.pushOpFailure(failureOp);
 		this.startBlock(text);
 	}
@@ -212,7 +218,7 @@ public class SimpleCParserGenerator extends ParserGenerator {
 	public void visitOption(Option p) {
 		int id = this.fid++;
 		this.file.writeIndent("char *c" + id + " = ctx->cur;");
-		this.startLoop("do {", "break;");
+		this.startLoop("do {", () -> this.file.writeIndent("break;"));
 		visitExpression(p.get(0));
 		this.file.writeIndent("c" + id + " = ctx->cur;");
 		this.endLoop("} while(0);");
@@ -223,7 +229,7 @@ public class SimpleCParserGenerator extends ParserGenerator {
 	public void visitRepetition(Repetition p) {
 		int id = this.fid++;
 		this.file.writeIndent("char *c" + id + " = ctx->cur;");
-		this.startLoop("do {", "break;");
+		this.startLoop("do {", () -> this.file.writeIndent("break;"));
 		visitExpression(p.get(0));
 		this.file.writeIndent("c" + id + " = ctx->cur;");
 		this.endLoop("} while(1);");
@@ -235,7 +241,7 @@ public class SimpleCParserGenerator extends ParserGenerator {
 		visitExpression(p.get(0));
 		int id = this.fid++;
 		this.file.writeIndent("char *c" + id + " = ctx->cur;");
-		this.startLoop("do {", "break;");
+		this.startLoop("do {", () -> this.file.writeIndent("break;"));
 		visitExpression(p.get(0));
 		this.file.writeIndent("c" + id + " = ctx->cur;");
 		this.endLoop("} while(1);");
@@ -255,7 +261,7 @@ public class SimpleCParserGenerator extends ParserGenerator {
 		int id = this.fid++;
 		this.file.writeIndent("char *c" + id + " = ctx->cur;");
 		this.file.writeIndent("int f" + id + " = 0;");
-		this.startLoop("do {", "break;");
+		this.startLoop("do {", () -> this.file.writeIndent("break;"));
 		visitExpression(p.get(0));
 		this.file.writeIndent("f" + id + " = 1;");
 		this.endLoop("} while(0);");
@@ -279,7 +285,7 @@ public class SimpleCParserGenerator extends ParserGenerator {
 		this.file.writeIndent("char *c" + id + " = ctx->cur;");
 
 		this.file.writeIndent("int i" + id + ";");
-		this.startLoop("for(i" + id + " = 0; i" + id + " < " + p.size() + "; ++i" + id + ") {", "continue;");
+		this.startLoop("for(i" + id + " = 0; i" + id + " < " + p.size() + "; ++i" + id + ") {", () -> this.file.writeIndent("continue;"));
 		this.file.writeIndent("ctx->cur = " + "c" + id + ";");
 
 		this.startBlock("switch(i" + id + ") {");
@@ -314,27 +320,61 @@ public class SimpleCParserGenerator extends ParserGenerator {
 
 	@Override
 	public void visitLink(Link p) {
-		throw new RuntimeException("Link Expression is not implemented");
+		if(this.option.enabledASTConstruction) {
+			int id = this.fid++;
+			this.pushOpFailure(() -> {
+				this.file.writeIndent("nez_abortLog(ctx, mark" + id + ");");
+				this.failure();
+			});
+			this.file.writeIndent("int mark" + id + " = nez_markLogStack(ctx);");
+			visitExpression(p.get(0));
+			this.file.writeIndent("ctx->left = nez_commitLog(ctx, mark" + id + ");");
+			this.file.writeIndent("nez_pushDataLog(ctx, LazyLink_T, 0, " + p.index + ", NULL, ctx->left);");
+			this.popOpFailure();
+		}
+		else {
+			visitExpression(p.get(0));
+		}
 	}
 
 	@Override
 	public void visitNew(New p) {
-		throw new RuntimeException("New Expression is not implemented");
+		if(this.option.enabledASTConstruction) {
+			if(p.lefted) {
+				throw new RuntimeException("Left Join is not implemented");
+			}
+			else {
+				int id = this.fid++;
+				this.pushOpFailure(() -> {
+					this.file.writeIndent("nez_abortLog(ctx, mark" + id + ");");
+					this.failure();
+				});
+				this.file.writeIndent("int mark" + id + " = nez_markLogStack(ctx);");
+				this.file.writeIndent("nez_pushDataLog(ctx, LazyNew_T, ctx->cur - ctx->inputs, -1, NULL, NULL);");
+			}
+		}
 	}
 
 	@Override
 	public void visitCapture(Capture p) {
-		throw new RuntimeException("Capture Expression is not implemented");
+		if(this.option.enabledASTConstruction) {
+			this.file.writeIndent("nez_pushDataLog(ctx, LazyCapture_T, ctx->cur - ctx->inputs, 0, NULL, NULL);");
+			this.popOpFailure();
+		}
 	}
 
 	@Override
 	public void visitTagging(Tagging p) {
-		throw new RuntimeException("Tagging Expression is not implemented");
+		if(this.option.enabledASTConstruction) {
+			this.file.writeIndent("nez_pushDataLog(ctx, LazyTag_T, 0, 0, \"" + p.tag.getName() + "\", NULL);");
+		}
 	}
 
 	@Override
 	public void visitReplace(Replace p) {
-		throw new RuntimeException("Replace Expression is not implemented");
+		if(this.option.enabledASTConstruction) {
+			this.file.writeIndent("nez_pushDataLog(ctx, LazyValue_T, 0, 0, \"" + p.value + "\", NULL);");
+		}
 	}
 
 	@Override
