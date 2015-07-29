@@ -225,17 +225,14 @@ void nez_unusedLog(ParsingContext ctx, ParsingLog log) {
 
 int commitCount = 0;
 
-ParsingObject commitNode(ParsingContext ctx, ParsingLog start, ParsingLog end,
+void commitNode(ParsingContext ctx, ParsingLog start, ParsingLog end,
                 int objectSize, long spos, long epos,
-                const char* tag, const char* value, ParsingObject po) {
+                const char* tag, const char* value, ParsingObject *dest) {
   ParsingObject newnode = NULL;
   newnode = nez_setObject_(ctx, newnode, nez_newObject_(ctx, spos, epos, tag, value));
   if (objectSize > 0) {
     newnode->child = (ParsingObject *)calloc(sizeof(ParsingObject), objectSize);
     newnode->child_size = objectSize;
-    if(po != NULL) {
-      nez_setObject(ctx, &newnode->child[0], po);
-    }
     ParsingLog next = NULL;
     int maxId = (objectSize - 1);
     for (ParsingLog cur = start; cur != end; cur = next) {
@@ -244,13 +241,13 @@ ParsingObject commitNode(ParsingContext ctx, ParsingLog start, ParsingLog end,
       fprintf(stderr, "Node[%d] type=%d,cur=%p next=%p\n", commitCount, cur->type, cur, cur->next);
 #endif
       if(cur->type == LazyLink_T) {
-        nez_setObject(ctx, &newnode->child[maxId - cur->pos], cur->po);
+        nez_setObject(ctx, &newnode->child[cur->pos], cur->po);
       }
       nez_unusedLog(ctx, cur);
     }
   }
   commitCount++;
-  return newnode;
+  nez_setObject(ctx, dest, newnode);
 }
 
 void nez_pushDataLog(ParsingContext ctx, int type, long pos,
@@ -292,11 +289,34 @@ void nez_pushDataLog(ParsingContext ctx, int type, long pos,
   }
 }
 
+/* additional function */
+int setChildrenIndex(ParsingContext ctx, ParsingLog cur, int depth) {
+  if(depth <= 0) {
+    return 0;
+  }
+  int index = setChildrenIndex(ctx, cur->next, depth-1);
+  switch(cur->type) {
+    case LazyLink_T: {
+      if(cur->pos == -1) {
+        cur->pos = index;
+      }
+      return cur->pos + 1;
+    }
+    case LazyLeftJoin_T: {
+      return 1;
+    }
+    default: {
+      return index;
+    }
+ }
+}
+
 ParsingObject nez_commitLog(ParsingContext ctx, int mark) {
   ParsingLog start = ctx->logStack;
   if(!start) {
     return NULL;
   }
+  setChildrenIndex(ctx, ctx->logStack, ctx->logStackSize - mark);
   ParsingLog cur = NULL;
   //assert(start->type == LazyCapture_T);
   int objectSize    = 0;
@@ -305,6 +325,7 @@ ParsingObject nez_commitLog(ParsingContext ctx, int mark) {
   const char* tag   = NULL;
   const char* value = NULL;
   ParsingObject po  = NULL;
+  ParsingObject *joined = &po;
   while (mark < ctx->logStackSize) {
     cur = ctx->logStack;
     ctx->logStack = ctx->logStack->next;
@@ -314,11 +335,7 @@ ParsingObject nez_commitLog(ParsingContext ctx, int mark) {
 #endif
     switch(cur->type) {
       case LazyLink_T: {
-        if(cur->pos == -1) {
-          cur->pos = objectSize;
-          objectSize++;
-        }
-        else if(!(cur->pos < objectSize)) {
+        if(!(cur->pos < objectSize)) {
           objectSize = cur->pos + 1;
         }
         break;
@@ -328,13 +345,17 @@ ParsingObject nez_commitLog(ParsingContext ctx, int mark) {
         goto L_unused;
       }
       case LazyLeftJoin_T: {
-        po = commitNode(ctx, start, cur, objectSize, spos, epos, tag, value, po);
+        if(!(objectSize > 0)) {
+          objectSize = 1;
+        }
+        commitNode(ctx, start, cur, objectSize, spos, epos, tag, value, joined);
+        joined = &((*joined)->child[0]);
         start = cur;
         spos = cur->pos;
         epos = spos;
         tag = NULL;
         value = NULL;
-        objectSize = 1;
+        objectSize = 0;
         goto L_unused;
       }
       case LazyNew_T: {
@@ -355,7 +376,7 @@ ParsingObject nez_commitLog(ParsingContext ctx, int mark) {
       }
     }
   }
-  po = commitNode(ctx, start, cur, objectSize, spos, epos, tag, value, po);
+  commitNode(ctx, start, cur, objectSize, spos, epos, tag, value, joined);
   //nez_abortLog(ctx, mark);
   return po;
   //nez_pushDataLog(ctx, LazyLink_T, NULL, index, NULL, po);

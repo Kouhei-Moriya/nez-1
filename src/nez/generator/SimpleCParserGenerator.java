@@ -340,16 +340,16 @@ public class SimpleCParserGenerator extends ParserGenerator {
 	@Override
 	public void visitNew(New p) {
 		if(this.option.enabledASTConstruction) {
+			int id = this.fid++;
+			this.pushOpFailure(() -> {
+				this.file.writeIndent("nez_abortLog(ctx, mark" + id + ");");
+				this.failure();
+			});
+			this.file.writeIndent("int mark" + id + " = nez_markLogStack(ctx);");
 			if(p.lefted) {
-				throw new RuntimeException("Left Join is not implemented");
+				this.file.writeIndent("nez_pushDataLog(ctx, LazyLeftJoin_T, ctx->cur - ctx->inputs, -1, NULL, NULL);");
 			}
 			else {
-				int id = this.fid++;
-				this.pushOpFailure(() -> {
-					this.file.writeIndent("nez_abortLog(ctx, mark" + id + ");");
-					this.failure();
-				});
-				this.file.writeIndent("int mark" + id + " = nez_markLogStack(ctx);");
 				this.file.writeIndent("nez_pushDataLog(ctx, LazyNew_T, ctx->cur - ctx->inputs, -1, NULL, NULL);");
 			}
 		}
