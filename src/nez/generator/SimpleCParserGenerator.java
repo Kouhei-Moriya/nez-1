@@ -36,10 +36,6 @@ public class SimpleCParserGenerator extends ParserGenerator {
 	private int failureOpStackPoint = 0;
 	private final ArrayList<Runnable> failureOpStack = new ArrayList<Runnable>();
 
-	{
-		this.failureOpStack.add(() -> this.file.writeIndent("return 1;"));
-	}
-
 	@Override
 	public String getDesc() {
 		return "C Parser Generator";
@@ -121,16 +117,39 @@ public class SimpleCParserGenerator extends ParserGenerator {
 		++this.failureOpStackPoint;
 	}
 
+	private Runnable peekOpFailure() {
+		return this.failureOpStack.get(this.failureOpStackPoint-1);
+	}
+
 	private Runnable popOpFailure() {
-		return this.failureOpStack.remove(this.failureOpStackPoint--);
+		return this.failureOpStack.remove(--this.failureOpStackPoint);
+	}
+
+	private void resetOpFailure(Runnable op) {
+		this.popOpFailure();
+		this.pushOpFailure(op);
+	}
+
+	private void appendOpFailure(Runnable op) {
+		if(op != null) {
+			Runnable current = this.popOpFailure();
+			if(current != null) {
+				this.pushOpFailure(() -> {
+					op.run();
+					current.run();
+				});
+			}
+			else {
+				this.pushOpFailure(op);
+			}
+		}
 	}
 
 	private void failure() {
-		Runnable op = this.popOpFailure();
+		Runnable op = this.peekOpFailure();
 		if(op != null) {
 			op.run();
 		}
-		this.pushOpFailure(op);
 	}
 
 	private void startBlock(String text) {
@@ -285,11 +304,12 @@ public class SimpleCParserGenerator extends ParserGenerator {
 		this.file.writeIndent("char *c" + id + " = ctx->cur;");
 
 		this.file.writeIndent("int i" + id + ";");
-		this.startLoop("for(i" + id + " = 0; i" + id + " < " + p.size() + "; ++i" + id + ") {", () -> this.file.writeIndent("continue;"));
+		this.startLoop("for(i" + id + " = 0; i" + id + " < " + p.size() + "; ++i" + id + ") {", null);
 		this.file.writeIndent("ctx->cur = " + "c" + id + ";");
 
 		this.startBlock("switch(i" + id + ") {");
 		for(int i = 0; i < p.size(); ++i) {
+			this.resetOpFailure(() -> this.file.writeIndent("continue;"));
 			this.endAndStartBlock("case " + i + ":");
 			this.file.writeIndent(";");
 			//this.file.writeIndent("ctx->choiceCount++;");
@@ -322,15 +342,11 @@ public class SimpleCParserGenerator extends ParserGenerator {
 	public void visitLink(Link p) {
 		if(this.option.enabledASTConstruction) {
 			int id = this.fid++;
-			this.pushOpFailure(() -> {
-				this.file.writeIndent("nez_abortLog(ctx, mark" + id + ");");
-				this.failure();
-			});
+			this.appendOpFailure(() -> this.file.writeIndent("nez_abortLog(ctx, mark" + id + ");"));
 			this.file.writeIndent("int mark" + id + " = nez_markLogStack(ctx);");
 			visitExpression(p.get(0));
 			this.file.writeIndent("ctx->left = nez_commitLog(ctx, mark" + id + ");");
 			this.file.writeIndent("nez_pushDataLog(ctx, LazyLink_T, 0, " + p.index + ", NULL, ctx->left);");
-			this.popOpFailure();
 		}
 		else {
 			visitExpression(p.get(0));
@@ -341,10 +357,7 @@ public class SimpleCParserGenerator extends ParserGenerator {
 	public void visitNew(New p) {
 		if(this.option.enabledASTConstruction) {
 			int id = this.fid++;
-			this.pushOpFailure(() -> {
-				this.file.writeIndent("nez_abortLog(ctx, mark" + id + ");");
-				this.failure();
-			});
+			this.appendOpFailure(() -> this.file.writeIndent("nez_abortLog(ctx, mark" + id + ");"));
 			this.file.writeIndent("int mark" + id + " = nez_markLogStack(ctx);");
 			if(p.lefted) {
 				this.file.writeIndent("nez_pushDataLog(ctx, LazyLeftJoin_T, ctx->cur - ctx->inputs, -1, NULL, NULL);");
@@ -359,7 +372,6 @@ public class SimpleCParserGenerator extends ParserGenerator {
 	public void visitCapture(Capture p) {
 		if(this.option.enabledASTConstruction) {
 			this.file.writeIndent("nez_pushDataLog(ctx, LazyCapture_T, ctx->cur - ctx->inputs, 0, NULL, NULL);");
-			this.popOpFailure();
 		}
 	}
 
@@ -414,10 +426,13 @@ public class SimpleCParserGenerator extends ParserGenerator {
 
 	@Override
 	public void visitProduction(Production r) {
+		this.fid = 0;
+		this.pushOpFailure(() -> this.file.writeIndent("return 1;"));
 		this.startBlock("int production_" + r.getLocalName() + "(ParsingContext ctx) {");
 		this.visitExpression(r.getExpression());
 		this.file.writeIndent("return 0;");
 		this.endBlock("}");
+		this.popOpFailure();
 		this.file.writeNewLine();
 	}
 
