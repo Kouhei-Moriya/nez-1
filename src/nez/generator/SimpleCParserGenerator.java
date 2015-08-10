@@ -34,6 +34,7 @@ import nez.lang.Tagging;
 public class SimpleCParserGenerator extends ParserGenerator {
 	private int fid = 0;
 	private int memoSize = 0;
+	private ArrayList<String> memorizedTerminalList = new ArrayList<String>();
 	private int failureOpStackPoint = 0;
 	private final ArrayList<Runnable> failureOpStack = new ArrayList<Runnable>();
 
@@ -114,6 +115,16 @@ public class SimpleCParserGenerator extends ParserGenerator {
 		this.file.writeIndent("return 0;");
 		this.endBlock("}");
 
+	}
+
+	private int getMemoId(String name) {
+		if(this.memorizedTerminalList.contains(name)) {
+			return this.memorizedTerminalList.indexOf(name);
+		}
+		else {
+			this.memorizedTerminalList.add(name);
+			return this.memoSize++;
+		}
 	}
 
 	private void pushOpFailure(Runnable op) {
@@ -245,7 +256,7 @@ public class SimpleCParserGenerator extends ParserGenerator {
 		visitExpression(p.get(0));
 		this.file.writeIndent("c" + id + " = ctx->cur;");
 		this.endLoop("} while(0);");
-		this.file.writeIndent("ctx->cur = " + "c" + id + ";");
+		this.file.writeIndent("ctx->cur = c" + id + ";");
 	}
 
 	@Override
@@ -256,7 +267,7 @@ public class SimpleCParserGenerator extends ParserGenerator {
 		visitExpression(p.get(0));
 		this.file.writeIndent("c" + id + " = ctx->cur;");
 		this.endLoop("} while(1);");
-		this.file.writeIndent("ctx->cur = " + "c" + id + ";");
+		this.file.writeIndent("ctx->cur = c" + id + ";");
 	}
 
 	@Override
@@ -268,7 +279,7 @@ public class SimpleCParserGenerator extends ParserGenerator {
 		visitExpression(p.get(0));
 		this.file.writeIndent("c" + id + " = ctx->cur;");
 		this.endLoop("} while(1);");
-		this.file.writeIndent("ctx->cur = " + "c" + id + ";");
+		this.file.writeIndent("ctx->cur = c" + id + ";");
 	}
 
 	@Override
@@ -276,7 +287,7 @@ public class SimpleCParserGenerator extends ParserGenerator {
 		int id = this.fid++;
 		this.file.writeIndent("char *c" + id + " = ctx->cur;");
 		visitExpression(p.get(0));
-		this.file.writeIndent("ctx->cur = " + "c" + id + ";");
+		this.file.writeIndent("ctx->cur = c" + id + ";");
 	}
 
 	@Override
@@ -291,7 +302,7 @@ public class SimpleCParserGenerator extends ParserGenerator {
 		this.startBlock("if(f" + id + ") {");
 		this.failure();
 		this.endAndStartBlock("} else {");
-		this.file.writeIndent("ctx->cur = " + "c" + id + ";");
+		this.file.writeIndent("ctx->cur = c" + id + ";");
 		this.endBlock("}");
 	}
 
@@ -309,7 +320,7 @@ public class SimpleCParserGenerator extends ParserGenerator {
 
 		this.file.writeIndent("int i" + id + ";");
 		this.startLoop("for(i" + id + " = 0; i" + id + " < " + p.size() + "; ++i" + id + ") {", null);
-		this.file.writeIndent("ctx->cur = " + "c" + id + ";");
+		this.file.writeIndent("ctx->cur = c" + id + ";");
 
 		this.startBlock("switch(i" + id + ") {");
 		for(int i = 0; i < p.size(); ++i) {
@@ -346,11 +357,40 @@ public class SimpleCParserGenerator extends ParserGenerator {
 	public void visitLink(Link p) {
 		if(this.option.enabledASTConstruction) {
 			int id = this.fid++;
-			this.appendOpFailure(() -> this.file.writeIndent("nez_abortLog(ctx, mark" + id + ");"));
 			this.file.writeIndent("int mark" + id + " = nez_markLogStack(ctx);");
-			visitExpression(p.get(0));
-			this.file.writeIndent("ctx->left = nez_commitLog(ctx, mark" + id + ");");
-			this.file.writeIndent("nez_pushDataLog(ctx, LazyLink_T, 0, " + p.index + ", NULL, ctx->left);");
+			if(this.option.enabledPackratParsing && p.get(0) instanceof NonTerminal) {
+				NonTerminal n = (NonTerminal)p.get(0);
+				int memoId = this.getMemoId(n.getLocalName());
+
+				this.file.writeIndent("memo = nez_getMemo(ctx, ctx->cur, " + memoId + ");");
+				this.startBlock("if(memo != NULL) {");
+				this.startBlock("if(memo->r) {");
+				this.failure();
+				this.endAndStartBlock("} else {");
+				this.file.writeIndent("nez_pushDataLog(ctx, LazyLink_T, 0, -1, NULL, memo->left);");
+				this.file.writeIndent("ctx->cur = memo->consumed;");
+				//Succeed
+				this.endBlock("}");
+
+				this.endAndStartBlock("} else {");
+				this.appendOpFailure(() -> this.file.writeIndent("nez_abortLog(ctx, mark" + id + ");"));
+				this.file.writeIndent("char *c" + id + " = ctx->cur;");
+				this.startBlock("if(production_" + n.getLocalName() + "(ctx)) {");
+				this.file.writeIndent("nez_setMemo(ctx, c" + id + ", " + memoId + ", 1);");
+				this.failure();
+				this.endBlock("}");
+				this.file.writeIndent("ctx->left = nez_commitLog(ctx, mark" + id + ");");
+				this.file.writeIndent("nez_pushDataLog(ctx, LazyLink_T, 0, " + p.index + ", NULL, ctx->left);");
+				this.file.writeIndent("nez_setMemo(ctx, c" + id + ", " + memoId + ", 0);");
+
+				this.endBlock("}");
+			}
+			else {
+				this.appendOpFailure(() -> this.file.writeIndent("nez_abortLog(ctx, mark" + id + ");"));
+				visitExpression(p.get(0));
+				this.file.writeIndent("ctx->left = nez_commitLog(ctx, mark" + id + ");");
+				this.file.writeIndent("nez_pushDataLog(ctx, LazyLink_T, 0, " + p.index + ", NULL, ctx->left);");
+			}
 		}
 		else {
 			visitExpression(p.get(0));
@@ -433,7 +473,7 @@ public class SimpleCParserGenerator extends ParserGenerator {
 		this.fid = 0;
 		if(this.option.enabledPackratParsing && r.isNoNTreeConstruction()) {
 			int id = this.fid++;
-			int memoId = this.memoSize++;
+			int memoId = this.getMemoId(r.getLocalName());
 			this.pushOpFailure(() -> {
 				this.file.writeIndent("nez_setMemo(ctx, c" + id + ", " + memoId + ", 1);");
 				this.file.writeIndent("return 1;");
@@ -446,11 +486,6 @@ public class SimpleCParserGenerator extends ParserGenerator {
 			this.startBlock("if(memo->r) {");
 			this.file.writeIndent("return 1;"); //Failed
 			this.endAndStartBlock("} else {");
-			/* if(this.option.enabledASTConstruction) {
-				this.startBlock("if(memo->left != NULL) {");
-				this.file.writeIndent("nez_pushDataLog(ctx, LazyLink_T, 0, -1, NULL, memo->left);");
-				this.endBlock("}");
-			} */
 			this.file.writeIndent("ctx->cur = memo->consumed;");
 			this.file.writeIndent("return 0;"); //Succeed
 			this.endBlock("}");
@@ -467,6 +502,9 @@ public class SimpleCParserGenerator extends ParserGenerator {
 		else {
 			this.pushOpFailure(() -> this.file.writeIndent("return 1;"));
 			this.startBlock("int production_" + r.getLocalName() + "(ParsingContext ctx) {");
+			if(this.option.enabledPackratParsing) {
+				this.file.writeIndent("MemoEntry memo = NULL;");
+			}
 			this.visitExpression(r.getExpression());
 			this.file.writeIndent("return 0;");
 			this.endBlock("}");
