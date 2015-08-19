@@ -60,6 +60,8 @@ public class SimpleCParserGenerator extends ParserGenerator {
 	public void makeHeader(Grammar g) {
 		this.file.write("#include \"libnez/c/libnez.h\"");
 		this.file.writeIndent("#include <stdio.h>");
+		this.file.writeIndent("#include <sys/time.h>");
+		this.file.writeIndent("#include <sys/resource.h>");
 		//this.file.writeIndent("#include <string.h>");
 		this.file.writeNewLine();
 		for(Production r : g.getProductionList()) {
@@ -68,6 +70,11 @@ public class SimpleCParserGenerator extends ParserGenerator {
 			}
 		}
 		this.file.writeNewLine();
+		if(this.option.enabledASTConstruction) {
+			this.file.writeIndent("extern unsigned long logCreationCount;");
+			this.file.writeIndent("extern unsigned long objCreationCount;");
+			this.file.writeNewLine();
+		}
 	}
 
 	@Override
@@ -92,26 +99,61 @@ public class SimpleCParserGenerator extends ParserGenerator {
 			this.file.writeIndent("ctx->cur = ctx->inputs;");
 			this.file.writeIndent("ctx->choiceCount = 0;");
 			 */
+		this.file.writeIndent("uint64_t start, end, latency;");
 		this.file.writeIndent("ParsingContext ctx = nez_CreateParsingContext(argv[1]);");
+		if(this.option.enabledASTConstruction) {
+			this.file.writeIndent("ParsingObject po = NULL;");
+		}
 		this.file.writeIndent("ctx->cur = ctx->inputs;");
 		if(this.option.enabledPackratParsing && memoSize > 0) {
 			this.file.writeIndent("createMemoTable(ctx, " + memoSize + ");");
 		}
+
+		this.startBlock("for (int i = 0; i < 5; i++) {");
+		this.file.writeIndent("ctx->cur = ctx->inputs;");
+		this.startBlock("if(i != 0) {");
+		this.file.writeIndent("ctx->choiceCount = 0;");
+		if(this.option.enabledPackratParsing && memoSize > 0) {
+			this.file.writeIndent("nez_cleanMemo(ctx);");
+		}
+		if(this.option.enabledASTConstruction) {
+			this.file.writeIndent("nez_DisposeObject(po);");
+			this.file.writeIndent("logCreationCount = 0;");
+			this.file.writeIndent("objCreationCount = 0;");
+		}
+		this.endBlock("}");
+		this.file.writeIndent("start = timer();");
 
 		this.startBlock("if(production_File(ctx)) {");
 		this.file.writeIndent("nez_PrintErrorInfo(\"parse error\");");
 		this.endAndStartBlock("} else if((ctx->cur - ctx->inputs) != ctx->input_size) {");
 		this.file.writeIndent("nez_PrintErrorInfo(\"unconsume\");");
 		this.endAndStartBlock("} else {");
+		this.file.writeIndent("end = timer();");
 		if(this.option.enabledASTConstruction) {
-			this.file.writeIndent("ParsingObject po = nez_commitLog(ctx,0);");
-			this.file.writeIndent("dump_pego(&po, ctx->inputs, 0);");
+			this.file.writeIndent("po = nez_commitLog(ctx,0);");
+			//this.file.writeIndent("ParsingObject po = nez_commitLog(ctx,0);");
+			//this.file.writeIndent("dump_pego(&po, ctx->inputs, 0);");
+		}
+		//else {
+		//	this.file.writeIndent("fprintf(stderr, \"consumed\\n\");");
+		//}
+
+		if(this.option.enabledASTConstruction) {
+			this.file.writeIndent("fprintf(stderr, \"ErapsedTime: %llu msec, LogCreation: %lu times, ObjectCreation: %lu times\\n\","
+					+ " (unsigned long long)end - start, (unsigned long)logCreationCount, (unsigned long)objCreationCount);");
 		}
 		else {
-			this.file.writeIndent("fprintf(stderr, \"consumed\\n\");");
+			this.file.writeIndent("fprintf(stderr, \"ErapsedTime: %llu msec\\n\", (unsigned long long)end - start);");
 		}
+		this.startBlock("if(i == 0 || latency > ((unsigned long long)end - start)) {");
+		this.file.writeIndent("latency = (unsigned long long)end - start;");
+		this.endBlock("}");
 		this.endBlock("}");
 
+		this.endBlock("}");
+		this.file.writeIndent("nez_log(ctx, argv[1], \"" + g.getProductionList().get(0).getGrammarFile().getURN() + "\", "
+				+ g.getProductionList().size() + ", latency, \"\");");
 		this.file.writeIndent("return 0;");
 		this.endBlock("}");
 
@@ -321,7 +363,7 @@ public class SimpleCParserGenerator extends ParserGenerator {
 		this.file.writeIndent("int i" + id + ";");
 		this.startLoop("for(i" + id + " = 0; i" + id + " < " + p.size() + "; ++i" + id + ") {", null);
 		this.file.writeIndent("ctx->cur = c" + id + ";");
-		//this.file.writeIndent("ctx->choiceCount++;");
+		this.file.writeIndent("ctx->choiceCount++;");
 
 		this.startBlock("switch(i" + id + ") {");
 		for(int i = 0; i < p.size(); ++i) {

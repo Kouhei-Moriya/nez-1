@@ -137,10 +137,13 @@ void nez_DisposeObject(ParsingObject pego) {
   }
 }
 
+unsigned long logCreationCount = 0;
+
 ParsingLog nez_newLog(ParsingContext ctx) {
   ParsingLog l;
   if(ctx->unusedLog == NULL) {
     l = (ParsingLog)malloc(sizeof(struct ParsingLog));
+    ++logCreationCount;
   }
   else {
     l = ctx->unusedLog;
@@ -150,10 +153,13 @@ ParsingLog nez_newLog(ParsingContext ctx) {
   return l;
 }
 
+unsigned long objCreationCount = 0;
+
 ParsingObject nez_newObject(ParsingContext ctx, const char *start) {
   ParsingObject o;
   if(ctx->unusedObject == NULL) {
     o = (ParsingObject)malloc(sizeof(struct ParsingObject));
+    ++objCreationCount;
   }
   else {
     o = ctx->unusedObject;
@@ -174,6 +180,7 @@ ParsingObject nez_newObject_(ParsingContext ctx, long start, long end,
                              const char* tag, const char* value) {
   ParsingObject o;
   o = (ParsingObject)malloc(sizeof(struct ParsingObject));
+  ++objCreationCount;
   o->refc = 0;
   o->start_pos = start;
   o->end_pos = end;
