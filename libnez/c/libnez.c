@@ -445,6 +445,20 @@ MemoEntry nez_getMemo(ParsingContext ctx, char* pos, int memoPoint) {
   return NULL;
 }
 
+/* additional function */
+void nez_cleanMemo(ParsingContext ctx) {
+	ctx->memo_table->memoHit = 0;
+	ctx->memo_table->memoMiss = 0;
+	ctx->memo_table->memoStored = 0;
+	size_t size = ctx->memo_table->size;
+	MemoEntry *memoArray = ctx->memo_table->memoArray;
+	for(int i = 0; i < size; ++i) {
+		memoArray[i]->key = -1;
+		memoArray[i]->consumed = NULL;
+		nez_setObject(ctx, &(memoArray[i]->left), NULL);
+	}
+}
+
 void nez_log(ParsingContext ctx, const char* input_file, const char* grammar, int ruleCount, uint64_t latency, const char* opt) {
   FILE *fp;
 

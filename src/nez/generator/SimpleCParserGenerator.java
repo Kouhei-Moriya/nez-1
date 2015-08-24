@@ -321,13 +321,13 @@ public class SimpleCParserGenerator extends ParserGenerator {
 		this.file.writeIndent("int i" + id + ";");
 		this.startLoop("for(i" + id + " = 0; i" + id + " < " + p.size() + "; ++i" + id + ") {", null);
 		this.file.writeIndent("ctx->cur = c" + id + ";");
+		//this.file.writeIndent("ctx->choiceCount++;");
 
 		this.startBlock("switch(i" + id + ") {");
 		for(int i = 0; i < p.size(); ++i) {
 			this.resetOpFailure(() -> this.file.writeIndent("continue;"));
 			this.endAndStartBlock("case " + i + ":");
 			this.file.writeIndent(";");
-			//this.file.writeIndent("ctx->choiceCount++;");
 			visitExpression(p.get(i));
 			this.file.writeIndent("break;"); //switch
 		}

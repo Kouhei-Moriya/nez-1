@@ -158,6 +158,7 @@ int nez_markLogStack(ParsingContext ctx);
 void createMemoTable(ParsingContext ctx, size_t size);
 void nez_setMemo(ParsingContext ctx, char* pos, int memoPoint, int r);
 MemoEntry nez_getMemo(ParsingContext ctx, char* pos, int memoPoint);
+void nez_cleanMemo(ParsingContext ctx);
 
 void nez_log(ParsingContext ctx, const char* input_file, const char* grammar, int ruleCount, uint64_t latency, const char* opt);
 
