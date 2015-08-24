@@ -34,6 +34,19 @@ struct MemoEntry {
   int r;
 };
 
+struct SymbolTable {
+  int size;
+  struct SymbolEntry *lastEntry;
+  struct SymbolEntry *unusedSymbol;
+};
+
+struct SymbolEntry {
+  int table_id;
+  long start_pos;
+  long end_pos;
+  struct SymbolEntry *next;
+};
+
 #define LazyLink_T 0
 #define LazyCapture_T 1
 #define LazyTag_T 2
@@ -78,6 +91,7 @@ struct ParsingContext {
   int* flags;
 
   struct MemoTable *memo_table;
+  struct SymbolTable *symbol_table;
 
   uint64_t choiceCount;
 
@@ -89,6 +103,7 @@ typedef struct ParsingContext *ParsingContext;
 typedef struct MemoryPool *MemoryPool;
 typedef union StackEntry* StackEntry;
 typedef struct MemoEntry* MemoEntry;
+typedef struct SymbolEntry* SymbolEntry;
 
 int level;
 static void dump_func(const char* name) {
@@ -158,6 +173,16 @@ int nez_markLogStack(ParsingContext ctx);
 void createMemoTable(ParsingContext ctx, size_t size);
 void nez_setMemo(ParsingContext ctx, char* pos, int memoPoint, int r);
 MemoEntry nez_getMemo(ParsingContext ctx, char* pos, int memoPoint);
+void nez_cleanMemo(ParsingContext ctx);
+
+void createSymbolTable(ParsingContext ctx);
+void disposeSymbolTable(ParsingContext ctx);
+void nez_rollbackSymbolTable(ParsingContext ctx, int mark);
+int nez_markSymbolTable(ParsingContext ctx);
+void nez_defSymbol(ParsingContext ctx, int id, char *spos, char *epos);
+char *nez_isSymbol(ParsingContext ctx, int id, char *pos);
+char *nez_isaSymbol(ParsingContext ctx, int id, char *pos);
+int nez_existsSymbol(ParsingContext ctx, int id);
 
 void nez_log(ParsingContext ctx, const char* input_file, const char* grammar, int ruleCount, uint64_t latency, const char* opt);
 

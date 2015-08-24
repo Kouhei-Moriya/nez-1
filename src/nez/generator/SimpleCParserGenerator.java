@@ -35,6 +35,8 @@ public class SimpleCParserGenerator extends ParserGenerator {
 	private int fid = 0;
 	private int memoSize = 0;
 	private ArrayList<String> memorizedTerminalList = new ArrayList<String>();
+	private int tableNameCount = 0;
+	private ArrayList<String> tableNameList = new ArrayList<String>();
 	private int failureOpStackPoint = 0;
 	private final ArrayList<Runnable> failureOpStack = new ArrayList<Runnable>();
 
@@ -64,7 +66,7 @@ public class SimpleCParserGenerator extends ParserGenerator {
 		this.file.writeNewLine();
 		for(Production r : g.getProductionList()) {
 			if(!r.getLocalName().startsWith("\"")) {
-				this.file.writeIndent("int production_" + r.getLocalName() + "(ParsingContext ctx);");
+				this.file.writeIndent("int production_" + this.normalizeName(r.getLocalName()) + "(ParsingContext ctx);");
 			}
 		}
 		this.file.writeNewLine();
@@ -94,11 +96,19 @@ public class SimpleCParserGenerator extends ParserGenerator {
 			 */
 		this.file.writeIndent("ParsingContext ctx = nez_CreateParsingContext(argv[1]);");
 		this.file.writeIndent("ctx->cur = ctx->inputs;");
-		if(this.option.enabledPackratParsing && memoSize > 0) {
+		if(this.option.enabledPackratParsing && this.memoSize > 0) {
 			this.file.writeIndent("createMemoTable(ctx, " + memoSize + ");");
 		}
+		if(this.tableNameCount > 0) {
+			this.file.writeIndent("createSymbolTable(ctx);");
+		}
 
-		this.startBlock("if(production_File(ctx)) {");
+		for(Production r : g.getProductionList()) {
+			if(r.getLocalName().replaceAll("&[^&!]+", "").equals("File")) {
+				this.startBlock("if(production_" + this.normalizeName(r.getLocalName()) + "(ctx)) {");
+				break;
+			}
+		}
 		this.file.writeIndent("nez_PrintErrorInfo(\"parse error\");");
 		this.endAndStartBlock("} else if((ctx->cur - ctx->inputs) != ctx->input_size) {");
 		this.file.writeIndent("nez_PrintErrorInfo(\"unconsume\");");
@@ -117,6 +127,10 @@ public class SimpleCParserGenerator extends ParserGenerator {
 
 	}
 
+	private String normalizeName(String name) {
+		return name.replaceAll("(_++)", "_$1").replaceAll("&", "_with_").replaceAll("!", "_without_");
+	}
+
 	private int getMemoId(String name) {
 		if(this.memorizedTerminalList.contains(name)) {
 			return this.memorizedTerminalList.indexOf(name);
@@ -124,6 +138,46 @@ public class SimpleCParserGenerator extends ParserGenerator {
 		else {
 			this.memorizedTerminalList.add(name);
 			return this.memoSize++;
+		}
+	}
+
+	private void lookupMemo(Expression p, int varId, int memoId) {
+		this.lookupMemo(p, varId, memoId, () -> {}, () -> {}, () -> {}, () -> {});
+	}
+
+	private void lookupMemo(Expression p, int varId, int memoId,
+			Runnable MemoHitSucc, Runnable MemoHitFail, Runnable MemoMissSucc, Runnable MemoMissFail) {
+		this.file.writeIndent("MemoEntry memo" + varId + " = nez_getMemo(ctx, ctx->cur, " + memoId + ");");
+		this.startBlock("if(memo" + varId + " != NULL) {");
+		this.startBlock("if(memo" + varId + "->r) {");
+		MemoHitFail.run();
+		this.failure();
+		this.endAndStartBlock("} else {");
+		this.file.writeIndent("ctx->cur = memo" + varId + "->consumed;");
+		MemoHitSucc.run();
+		this.endBlock("}");
+		this.endAndStartBlock("} else {");
+		this.file.writeIndent("char *c" + varId + " = ctx->cur;");
+		this.appendOpFailure(MemoMissFail);
+		Runnable OpFailure = this.peekOpFailure();
+		this.pushOpFailure(() -> {
+			this.file.writeIndent("nez_setMemo(ctx, c" + varId + ", " + memoId + ", 1);");
+			OpFailure.run();
+		});
+		this.visitExpression(p);
+		this.popOpFailure();
+		MemoMissSucc.run();
+		this.file.writeIndent("nez_setMemo(ctx, c" + varId + ", " + memoId + ", 0);");
+		this.endBlock("}");
+	}
+
+	private int getTableId(String name) {
+		if(this.tableNameList.contains(name)) {
+			return this.tableNameList.indexOf(name);
+		}
+		else {
+			this.tableNameList.add(name);
+			return this.tableNameCount++;
 		}
 	}
 
@@ -321,13 +375,13 @@ public class SimpleCParserGenerator extends ParserGenerator {
 		this.file.writeIndent("int i" + id + ";");
 		this.startLoop("for(i" + id + " = 0; i" + id + " < " + p.size() + "; ++i" + id + ") {", null);
 		this.file.writeIndent("ctx->cur = c" + id + ";");
+		//this.file.writeIndent("ctx->choiceCount++;");
 
 		this.startBlock("switch(i" + id + ") {");
 		for(int i = 0; i < p.size(); ++i) {
 			this.resetOpFailure(() -> this.file.writeIndent("continue;"));
 			this.endAndStartBlock("case " + i + ":");
 			this.file.writeIndent(";");
-			//this.file.writeIndent("ctx->choiceCount++;");
 			visitExpression(p.get(i));
 			this.file.writeIndent("break;"); //switch
 		}
@@ -343,7 +397,7 @@ public class SimpleCParserGenerator extends ParserGenerator {
 
 	@Override
 	public void visitNonTerminal(NonTerminal p) {
-		this.startBlock("if(production_" + p.getLocalName() + "(ctx)) {");
+		this.startBlock("if(production_" + this.normalizeName(p.getLocalName()) + "(ctx)) {");
 		this.failure();
 		this.endBlock("}");
 	}
@@ -360,30 +414,15 @@ public class SimpleCParserGenerator extends ParserGenerator {
 			this.file.writeIndent("int mark" + id + " = nez_markLogStack(ctx);");
 			if(this.option.enabledPackratParsing && p.get(0) instanceof NonTerminal) {
 				NonTerminal n = (NonTerminal)p.get(0);
-				int memoId = this.getMemoId(n.getLocalName());
-
-				this.file.writeIndent("memo = nez_getMemo(ctx, ctx->cur, " + memoId + ");");
-				this.startBlock("if(memo != NULL) {");
-				this.startBlock("if(memo->r) {");
-				this.failure();
-				this.endAndStartBlock("} else {");
-				this.file.writeIndent("nez_pushDataLog(ctx, LazyLink_T, 0, -1, NULL, memo->left);");
-				this.file.writeIndent("ctx->cur = memo->consumed;");
-				//Succeed
-				this.endBlock("}");
-
-				this.endAndStartBlock("} else {");
-				this.appendOpFailure(() -> this.file.writeIndent("nez_abortLog(ctx, mark" + id + ");"));
-				this.file.writeIndent("char *c" + id + " = ctx->cur;");
-				this.startBlock("if(production_" + n.getLocalName() + "(ctx)) {");
-				this.file.writeIndent("nez_setMemo(ctx, c" + id + ", " + memoId + ", 1);");
-				this.failure();
-				this.endBlock("}");
-				this.file.writeIndent("ctx->left = nez_commitLog(ctx, mark" + id + ");");
-				this.file.writeIndent("nez_pushDataLog(ctx, LazyLink_T, 0, " + p.index + ", NULL, ctx->left);");
-				this.file.writeIndent("nez_setMemo(ctx, c" + id + ", " + memoId + ", 0);");
-
-				this.endBlock("}");
+				this.lookupMemo(n, id, this.getMemoId(n.getLocalName()),
+						() -> this.file.writeIndent("nez_pushDataLog(ctx, LazyLink_T, 0, " + p.index + ", NULL, memo" + id + "->left);"),
+						() -> {},
+						() -> {
+							this.file.writeIndent("ctx->left = nez_commitLog(ctx, mark" + id + ");");
+							this.file.writeIndent("nez_pushDataLog(ctx, LazyLink_T, 0, " + p.index + ", NULL, ctx->left);");
+						},
+						() -> this.file.writeIndent("nez_abortLog(ctx, mark" + id + ");")
+				);
 			}
 			else {
 				this.appendOpFailure(() -> this.file.writeIndent("nez_abortLog(ctx, mark" + id + ");"));
@@ -435,17 +474,38 @@ public class SimpleCParserGenerator extends ParserGenerator {
 
 	@Override
 	public void visitBlock(Block p) {
-		throw new RuntimeException("Block Expression is not implemented");
+		int id = this.fid++;
+		this.appendOpFailure(() -> this.file.writeIndent("nez_rollbackSymbolTable(ctx, mark" + id + ");"));
+		this.file.writeIndent("int mark" + id + " = nez_markSymbolTable(ctx);");
+		this.visitExpression(p.get(0));
+		this.file.writeIndent("nez_rollbackSymbolTable(ctx, mark" + id + ");");
 	}
 
 	@Override
 	public void visitDefSymbol(DefSymbol p) {
-		throw new RuntimeException("DefSymbol Expression is not implemented");
+		int id = this.fid++;
+		int tableId = this.getTableId(p.getTableName());
+		this.appendOpFailure(() -> this.file.writeIndent("nez_rollbackSymbolTable(ctx, mark" + id + ");"));
+		this.file.writeIndent("int mark" + id + " = nez_markSymbolTable(ctx);");
+		this.file.writeIndent("char *c" + id + " = ctx->cur;");
+		this.visitExpression(p.get(0));
+		this.file.writeIndent("nez_defSymbol(ctx, " + tableId + ", c" + id + ", ctx->cur);");
 	}
 
 	@Override
 	public void visitIsSymbol(IsSymbol p) {
-		throw new RuntimeException("IsSymbol Expression is not implemented");
+		int id = this.fid++;
+		int tableId = this.getTableId(p.getTableName());
+		if(p.checkLastSymbolOnly) {
+			this.file.writeIndent("char *c" + id + " = nez_isSymbol(ctx, " + tableId + ", ctx->cur);");
+		}
+		else {
+			this.file.writeIndent("char *c" + id + " = nez_isaSymbol(ctx, " + tableId + ", ctx->cur);");
+		}
+		this.startBlock("if(c" + id + " == NULL) {");
+		this.failure();
+		this.endBlock("}");
+		this.file.writeIndent("ctx->cur = c" + id + ";");
 	}
 
 	@Override
@@ -471,45 +531,17 @@ public class SimpleCParserGenerator extends ParserGenerator {
 	@Override
 	public void visitProduction(Production r) {
 		this.fid = 0;
+		this.pushOpFailure(() -> this.file.writeIndent("return 1;"));
+		this.startBlock("int production_" + this.normalizeName(r.getLocalName()) + "(ParsingContext ctx) {");
 		if(this.option.enabledPackratParsing && r.isNoNTreeConstruction()) {
-			int id = this.fid++;
-			int memoId = this.getMemoId(r.getLocalName());
-			this.pushOpFailure(() -> {
-				this.file.writeIndent("nez_setMemo(ctx, c" + id + ", " + memoId + ", 1);");
-				this.file.writeIndent("return 1;");
-			});
-
-			this.startBlock("int production_" + r.getLocalName() + "(ParsingContext ctx) {");
-
-			this.file.writeIndent("MemoEntry memo = nez_getMemo(ctx, ctx->cur, " + memoId + ");");
-			this.startBlock("if(memo != NULL) {");
-			this.startBlock("if(memo->r) {");
-			this.file.writeIndent("return 1;"); //Failed
-			this.endAndStartBlock("} else {");
-			this.file.writeIndent("ctx->cur = memo->consumed;");
-			this.file.writeIndent("return 0;"); //Succeed
-			this.endBlock("}");
-			this.endBlock("}");
-
-			this.file.writeIndent("char *c" + id + " = ctx->cur;");
-			this.visitExpression(r.getExpression());
-			this.file.writeIndent("nez_setMemo(ctx, c" + id + ", " + memoId + ", 0);");
-			this.file.writeIndent("return 0;");
-			this.endBlock("}");
-
-			this.popOpFailure();
+			this.lookupMemo(r.getExpression(), this.fid++, this.getMemoId(r.getLocalName()));
 		}
 		else {
-			this.pushOpFailure(() -> this.file.writeIndent("return 1;"));
-			this.startBlock("int production_" + r.getLocalName() + "(ParsingContext ctx) {");
-			if(this.option.enabledPackratParsing) {
-				this.file.writeIndent("MemoEntry memo = NULL;");
-			}
 			this.visitExpression(r.getExpression());
-			this.file.writeIndent("return 0;");
-			this.endBlock("}");
-			this.popOpFailure();
 		}
+		this.file.writeIndent("return 0;");
+		this.endBlock("}");
+		this.popOpFailure();
 		this.file.writeNewLine();
 	}
 

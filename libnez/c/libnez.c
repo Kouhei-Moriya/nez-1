@@ -445,6 +445,127 @@ MemoEntry nez_getMemo(ParsingContext ctx, char* pos, int memoPoint) {
   return NULL;
 }
 
+/* additional function */
+void nez_cleanMemo(ParsingContext ctx) {
+	ctx->memo_table->memoHit = 0;
+	ctx->memo_table->memoMiss = 0;
+	ctx->memo_table->memoStored = 0;
+	size_t size = ctx->memo_table->size;
+	MemoEntry *memoArray = ctx->memo_table->memoArray;
+	for(int i = 0; i < size; ++i) {
+		memoArray[i]->key = -1;
+		memoArray[i]->consumed = NULL;
+		nez_setObject(ctx, &(memoArray[i]->left), NULL);
+	}
+}
+
+/* additional functions (Symbol table) */
+SymbolEntry nez_newSymbol(ParsingContext ctx) {
+	SymbolEntry s;
+	if(ctx->symbol_table->unusedSymbol == NULL) {
+		s = (SymbolEntry)malloc(sizeof(struct SymbolEntry));
+	}
+	else {
+		s = ctx->symbol_table->unusedSymbol;
+		ctx->symbol_table->unusedSymbol = s->next;
+	}
+	return s;
+}
+
+void disposeSymbol(SymbolEntry s) {
+	if(s != NULL) {
+		disposeSymbol(s->next);
+		free(s);
+	}
+}
+
+void createSymbolTable(ParsingContext ctx) {
+	ctx->symbol_table = malloc(sizeof(struct SymbolTable));
+	ctx->symbol_table->size = 0;
+	ctx->symbol_table->lastEntry = NULL;
+	ctx->symbol_table->unusedSymbol = NULL;
+}
+
+void disposeSymbolTable(ParsingContext ctx) {
+	disposeSymbol(ctx->symbol_table->lastEntry);
+	disposeSymbol(ctx->symbol_table->unusedSymbol);
+	free(ctx->symbol_table);
+}
+
+void nez_unusedSymbol(ParsingContext ctx, SymbolEntry s) {
+	s->next = ctx->symbol_table->unusedSymbol;
+	ctx->symbol_table->unusedSymbol = s;
+}
+
+void nez_rollbackSymbolTable(ParsingContext ctx, int mark) {
+	int size = ctx->symbol_table->size;
+	ctx->symbol_table->size = mark;
+	while (mark < size--) {
+		SymbolEntry s = ctx->symbol_table->lastEntry;
+		ctx->symbol_table->lastEntry = s->next;
+		nez_unusedSymbol(ctx, s);
+	}
+}
+
+int nez_markSymbolTable(ParsingContext ctx) {
+	return ctx->symbol_table->size;
+}
+
+int equalsSymbol(ParsingContext ctx, long sym_pos, size_t sym_len, char *pos) {
+	if(sym_len < 0 || (pos - ctx->inputs + sym_len) > ctx->input_size) {
+		return 0;
+	}
+	return (memcmp(ctx->inputs + sym_pos, pos, sym_len)) == 0;
+}
+
+void nez_defSymbol(ParsingContext ctx, int id, char *spos, char *epos) {
+	SymbolEntry s = nez_newSymbol(ctx);
+	s->table_id = id;
+	s->start_pos = spos - ctx->inputs;
+	s->end_pos = epos - ctx->inputs;
+	s->next = ctx->symbol_table->lastEntry;
+	ctx->symbol_table->lastEntry = s;
+	ctx->symbol_table->size++;
+}
+
+char *nez_isSymbol(ParsingContext ctx, int id, char *pos) {
+	SymbolEntry cur;
+	for(cur = ctx->symbol_table->lastEntry; cur != NULL; cur = cur->next) {
+		if(cur->table_id == id) {
+			long len = cur->end_pos - cur->start_pos;
+			if(equalsSymbol(ctx, cur->start_pos, (size_t)len, pos)) {
+				return pos + len;
+			}
+		}
+	}
+	return NULL;
+}
+
+char *nez_isaSymbol(ParsingContext ctx, int id, char *pos) {
+	SymbolEntry cur;
+	for(cur = ctx->symbol_table->lastEntry; cur != NULL; cur = cur->next) {
+		if(cur->table_id == id) {
+			long len = cur->end_pos - cur->start_pos;
+			if(equalsSymbol(ctx, cur->start_pos, (size_t)len, pos)) {
+				return pos + len;
+			}
+			break;
+		}
+	}
+	return NULL;
+}
+
+int nez_existsSymbol(ParsingContext ctx, int id) {
+	SymbolEntry cur;
+	for(cur = ctx->symbol_table->lastEntry; cur != NULL; cur = cur->next) {
+		if(cur->table_id == id) {
+			return 1;
+		}
+	}
+	return 0;
+}
+/* end of addition */
+
 void nez_log(ParsingContext ctx, const char* input_file, const char* grammar, int ruleCount, uint64_t latency, const char* opt) {
   FILE *fp;
 
